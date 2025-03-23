@@ -1508,6 +1508,7 @@ void hf3fs_read(fuse_req_t req, fuse_ino_t fino, size_t size, off_t off, struct 
       }
     }
   */
+  // d的定义是FuseClients d;
   auto memh = IOBuffer(folly::coro::blocking_wait(d.bufPool->allocate()));
 
   auto userInfo = UserInfo(flat::Uid(fuse_req_ctx(req)->uid), flat::Gid(fuse_req_ctx(req)->gid), d.fuseToken);
@@ -1522,6 +1523,7 @@ void hf3fs_read(fuse_req_t req, fuse_ino_t fino, size_t size, off_t off, struct 
   }
 
   std::vector<ssize_t> res(1);
+  // 保存client 路由信息 chunksize，res是干嘛的？
   PioV ioExec(*d.storageClient, config.chunk_size_limit(), res);
   auto retAdd = ioExec.addRead(0, inode, 0, off, size, memh.data(), memh);
   if (retAdd.hasError()) {

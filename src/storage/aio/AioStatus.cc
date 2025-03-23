@@ -83,6 +83,7 @@ Result<Void> AioStatus::init(uint32_t maxEvents) {
   return Void{};
 }
 
+// 为每个待处理的异步读请求 准备 iocb 结构
 void AioStatus::collect() {
   auto recordGuard = ioCollectRecorder.record();
   while (availableToSubmit() && iterator_) {
@@ -99,6 +100,7 @@ void AioStatus::collect() {
     availables_.pop_back();
     auto &state = job.state();
     job.resetStartTime();
+    // 初始化iocb需要用到
     ::io_prep_pread(iocb, state.readFd, state.localbuf.ptr(), state.readLength, state.readOffset);
     iocb->data = &job;
   }
@@ -227,6 +229,7 @@ void IoUringStatus::collect() {
     job.resetStartTime();
     struct io_uring_sqe *sqe = ::io_uring_get_sqe(&ring_);
     assert(sqe != nullptr);
+    // 数据是直接写入state.localbuf.ptr 这个地址里面的
     ::io_uring_prep_read_fixed(sqe,
                                state.fdIndex.value_or(state.readFd),
                                state.localbuf.ptr(),
@@ -237,6 +240,7 @@ void IoUringStatus::collect() {
       sqe->flags |= IOSQE_FIXED_FILE;
     }
     ::io_uring_sqe_set_data(sqe, &job);
+    // 将job加入submittingJobs队列
     submittingJobs_.push_back(&job);
   }
   recordGuard.succ();
