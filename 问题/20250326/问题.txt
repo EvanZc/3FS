@@ -1,0 +1,14 @@
+chunk的元数据什么时候会被修改
+
+
+meta是否会和stroage主动交互？
+？？？
+
+meta的元数据是怎么更新的，文件级别还是io级别
+那这样看，感觉是IO级别啊
+
+为什么要targetmap的快照
+
+meta是否有缓存 ---》 acl缓存，访问路径的时候
+CoTryTask<ResolveResult> PathResolveOp::path(InodeId parent, const Path &path) 
+IClinet是什么时候被实现的
