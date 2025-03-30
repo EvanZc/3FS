@@ -1,0 +1,21 @@
+fuse在需要解析内核路径的时候，要调用lookup。
+解析路径并拿到inode id的过程：
+
+假设用户调用 open("/dir/file", O_RDONLY)，流程如下：
+
+1、内核拆解路径为 dir 和 file。
+2、内核从根目录（inode=1）开始，调用 FUSE 的 lookup 方法，传入父 inode=1 和名字 "dir"。
+3、FUSE 返回 dir 的 inode（比如 2）。
+4、内核再调用 FUSE 的 lookup，传入父 inode=2 和名字 "file"。
+5、FUSE 返回 file 的 inode（比如 3）。
+6、内核最终调用 FUSE 的 open 方法，传入 inode=3。
+
+一旦文件被成功打开，内核会为它分配一个文件描述符（fd），并关联到文件的 inode。后续通过 fd 操作时，内核直接通过 fd 找到 inode，无需再次解析路径。
+
+以 read(fd, buf, size) 为例：
+1、内核通过 fd 找到对应的 struct file，进而获取文件的 inode。
+
+2、内核调用 FUSE 的 .read 回调（定义在 fuse_lowlevel_ops 中），直接传入：
+	文件的 inode（fuse_ino_t）
+	读取的偏移量、大小等参数。
+3、FUSE 用户态文件系统根据 inode 执行实际的读取操作，无需知道路径。

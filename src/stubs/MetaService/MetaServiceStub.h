@@ -15,7 +15,7 @@ class MetaServiceStub : public IMetaServiceStub {
 #define META_STUB_METHOD(NAME, REQ, RESP)                                                                             \
   CoTryTask<RESP> NAME(const REQ &req, const net::UserRequestOptions &options, serde::Timestamp *timestamp = nullptr) \
       override
-
+  
   META_STUB_METHOD(statFs, StatFsReq, StatFsRsp);
   META_STUB_METHOD(stat, StatReq, StatRsp);
   META_STUB_METHOD(create, CreateReq, CreateRsp);

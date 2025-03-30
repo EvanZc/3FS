@@ -1,6 +1,6 @@
 #include "common/monitor/ClickHouseClient.h"
 
-#include <clickhouse/client.h>
+#include <clickhouse/>
 #include <folly/sorted_vector_types.h>
 
 namespace hf3fs::monitor {
