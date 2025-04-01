@@ -1,0 +1,141 @@
+namespace hf3fs::fuse {
+FuseClients d;
+monitor::CountRecorder fuseOp{"fuse.op"};
+void record(std::string_view op, uid_t uid) {
+  fuseOp.addSample(1, {{"instance", std::string(op)}, {"uid", folly::to<std::string>(uid)}});
+}
+
+const fuse_lowlevel_ops hf3fs_oper
+
+const fuse_lowlevel_ops hf3fs_oper = {
+    .init = hf3fs_init,
+    .destroy = hf3fs_destroy,
+    .lookup = hf3fs_lookup,
+    .forget = hf3fs_forget,
+    .getattr = hf3fs_getattr,
+    .setattr = hf3fs_setattr,
+    .readlink = hf3fs_readlink,
+    .mknod = hf3fs_mknod,
+    .mkdir = hf3fs_mkdir,
+    .unlink = hf3fs_unlink,
+    .rmdir = hf3fs_rmdir,
+    .symlink = hf3fs_symlink,
+    .rename = hf3fs_rename,
+    .link = hf3fs_link,
+    .open = hf3fs_open,
+    .read = hf3fs_read,
+    .write = hf3fs_write,
+    .flush = hf3fs_flush,
+    .release = hf3fs_release,
+    .fsync = hf3fs_fsync,
+    .opendir = hf3fs_opendir,
+    //    .readdir = hf3fs_readdir,
+    .releasedir = hf3fs_releasedir,
+    //.fsyncdir = hf3fs_fsyncdir,
+    .statfs = hf3fs_statfs,
+    .setxattr = hf3fs_setxattr,
+    .getxattr = hf3fs_getxattr,
+    .listxattr = hf3fs_listxattr,
+    .removexattr = hf3fs_removexattr,
+    .create = hf3fs_create,
+    .ioctl = hf3fs_ioctl,
+    .readdirplus = hf3fs_readdirplus,
+};
+
+fuse_session_new 会创建一个fuse的session （这里返回的session是放在FuseClient里面的）
+入参op实际是hf3fs_oper，它有自定义的文件系统函数
+
+hf3fs_lookup 会创建inode，加入d.inodes这个unordered_map<InodeId, std::shared_ptr<RcInode>>里面
+
+具体代码：
+auto inode = Inode{};
+inode.id = inodeid;
+d.inodes.insert({inodeid, std::make_shared<RcInode>(inode, 1)});
+
+这样在这里就已经确定了它是什么类型
+
+
+------------------
+
+这个entry是有失效时间的？
+
+void init_entry(struct fuse_entry_param *e, double attr_timeout, double entry_timeout) {
+  memset(e, 0, sizeof(*e));
+  e->attr_timeout = attr_timeout;
+  e->entry_timeout = entry_timeout;
+}
+
+是的，这个时间会记录attr的缓存时间
+fuse_reply_attr(req, &attr, 1.0); // 回复属性，缓存1秒
+
+超时时间以内，这个属性会被缓存在VFS层中
+
+两次访问文件属性的间隔大于超时时间，则会触发getattr请求。
+
+entry_timeout 没有找到具体使用的地方，可能在UserKey.h里面才会有，没有具体看，优先级低
+
+-------------------------------------
+
+fuse_lowlevel_notify_inval_entry
+主动触发缓存失效
+
+---------------------------------------
+
+客户端是如何拿到chain id和chunk id的？
+
+TRACK_OFFSET_FOR_CHAIN 是7，但是目的是什么？ track在 addWrite和addRead的入口都是0
+那offset / layout.chunkSize 就是知道是文件的第几个chunk了
+
+假设ChunkSize 64k，off 70k，len = 150k，
+
+chunkOff = 4k
+
+第一次for循环，初始化l = 60k
+l = std::min(l, len); // 60k < 150k, l还是等于60k
+opOff = 70k + 0 = 70k
+getChainOfChunk 入参 (inode, 70k / 64k + 0) ==> (inode, 1) ==> 1就是chunk idx ===> 还要继续
+
+
+PioV::chunkIo 函数：
+    auto chunkSize = f.layout.chunkSize;
+    auto chunkOff = off % chunkSize;     // 肯定是从偏移开始，off就是最上层比如hf3fs_write传下来的offset
+
+    for (size_t lastL = 0, l = std::min((size_t)(chunkSize - chunkOff), len);  // l is within a chunk
+           l < len + chunkSize;                                                  // for the last chunk
+           lastL = l, l += chunkSize) {
+
+        l = std::min(l, len);  // l is always growing longer
+        auto opOff = off + lastL;
+        auto chain = f.getChainId(inode, opOff, *routingInfo_, track);
+        getChainId的定义
+        Result<ChainId> File::getChainId(const Inode &inode,size_t offset,const flat::RoutingInfo &routingInfo,uint16_t track)
+                |
+                |----auto ref = layout.getChainOfChunk(inode, offset / layout.chunkSize + track * TRACK_OFFSET_FOR_CHAIN);
+                        |
+                        |----ChainRef Layout::getChainOfChunk(const Inode &inode, size_t chunkIndex) const {
+                              const auto chains = getChainIndexList();
+                              XLOGF_IF(FATAL, (!stripeSize || chains.empty()), "Inode {}'s layout is invalid", inode);
+                              auto stripe = chunkIndex % stripeSize;
+                              return ChainRef{tableId, tableVersion, chains[stripe]};
+                            }
+        auto chain = f.getChainId(inode, opOff, *routingInfo_, track);
+        RETURN_ON_ERROR(chain);
+        auto fchunk = f.getChunkId(inode.id, opOff);
+        RETURN_ON_ERROR(fchunk);
+        auto chunk = storage::ChunkId(*fchunk);
+        auto chunkLen = l - lastL;
+        for (size_t co = 0; co < chunkLen; co += rcs) {
+            consumeChunk(*chain, chunk, chunkSize, chunkOff + co, std::min(rcs, chunkLen - co));
+        }
+
+        chunkOff = 0;  // chunks other than first always starts from 0
+    }
+
+
+注意，这里的ChunkID类型，inodeId + track + chunkid组成
+ChunkId(InodeId inode, uint16_t track, uint32_t chunk)
+      : tenent_({0}),
+        reserved_({0}),
+        inode_(folly::bit_cast<std::array<uint8_t, 8>>(folly::Endian::big64(inode.u64()))),
+        track_(folly::bit_cast<std::array<uint8_t, 2>>(folly::Endian::big16(track))),
+        chunk_(folly::bit_cast<std::array<uint8_t, 4>>(folly::Endian::big32(chunk))) {}
