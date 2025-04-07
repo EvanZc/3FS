@@ -1,0 +1,149 @@
+metaclient实例化
+
+metaClient = std::make_shared<MetaClient>(
+          clientId,
+          config.meta_client(),
+          std::make_unique<MetaClient::StubFactory>([&client](net::Address addr) { return client->serdeCtx(addr); }),
+          mgmtdClient,
+          env.storageClientGetter(),
+          false);
+
+SERDE_SERVICE(MetaSerde, 4)
+
+#define IMETA_STUB_METHOD(NAME, REQ, RESP)                             \
+  virtual CoTryTask<RESP> NAME(const REQ &req,                         \
+                               const net::UserRequestOptions &options, \
+                               serde::Timestamp *timestamp = nullptr) = 0
+  IMETA_STUB_METHOD(open, OpenReq, OpenRsp);
+
+virtual CoTryTask<OpenRsp> open(const OpenReq &req,                         \
+                               const net::UserRequestOptions &options, \
+                               serde::Timestamp *timestamp = nullptr) = 0
+
+
+IMPL_META_STUB_METHOD(open, OpenReq, OpenRsp);
+
+#define IMPL_META_STUB_METHOD(NAME, REQ, RESP)                                           \
+  template <typename Context>                                                            \
+  CoTryTask<RESP> MetaServiceStub<Context>::NAME(const REQ &req,                         \
+                                                 const net::UserRequestOptions &options, \
+                                                 hf3fs::serde::Timestamp *timestamp) {   \
+    co_return co_await MetaSerde<>::NAME<Context>(context_, req, &options, timestamp);   \
+  }
+
+template <typename Context>                                                            \
+  CoTryTask<OpenRsp> MetaServiceStub<Context>::open(const OpenReq &req,                         \
+                                                 const net::UserRequestOptions &options, \
+                                                 hf3fs::serde::Timestamp *timestamp) {   \
+    co_return co_await MetaSerde<>::open<Context>(context_, req, &options, timestamp);   \
+  }
+
+
+
+#define SERDE_SERVICE(NAME, ID) SERDE_SERVICE_2(NAME, NAME, ID)
+
+#define SERDE_SERVICE_2(STRUCT_NAME, SERVICE_NAME, ID) \
+  template <class T = void>                            \
+  struct STRUCT_NAME : public ::hf3fs::serde::ServiceBase<#SERVICE_NAME, ID>
+
+#define SERDE_SERVICE_METHOD(NAME, ID, REQ, RSP)  \
+  SERDE_SERVICE_METHOD_SENDER(NAME, ID, REQ, RSP) \
+  SERDE_SERVICE_METHOD_REFL(NAME, ID, REQ, RSP)
+
+RPC方法定义
+#define SERDE_SERVICE_METHOD_SENDER(NAME, ID, REQ, RSP)                                                    \
+ public:                                                                                                   \
+  static constexpr auto NAME##MethodId = ID;                                                               \
+                                                                                                           \
+  template <class Context>                                                                                 \
+  static CoTryTask<RSP> NAME(Context &ctx,                                                                 \
+                             const REQ &req,                                                               \
+                             const ::hf3fs::net::UserRequestOptions *options = nullptr,                    \
+                             ::hf3fs::serde::Timestamp * timestamp = nullptr) {                            \
+    co_return co_await ctx.template call<kServiceNameWrapper, #NAME, REQ, RSP, kServiceID, ID>(req,        \
+                                                                                               options,    \
+                                                                                               timestamp); \
+  }        
+
+call函数的定义，在ClientContext里面
+
+template <NameWrapper kServiceName,
+            NameWrapper kMethodName,
+            class Req,
+            class Rsp,
+            uint16_t ServiceID,
+            uint16_t MethodID>
+  CoTryTask<Rsp> call(const Req &req,
+                      const net::UserRequestOptions *customOptions = nullptr,
+                      Timestamp *timestamp = nullptr) {
+    auto options = *options_.load(std::memory_order_acquire);
+    if (customOptions != nullptr) {
+      options.merge(*customOptions);
+    }
+
+
+查找serdeCtx在哪里被调用
+serde::ClientContext serdeCtx(Address serverAddr) {
+    return serde::ClientContext(ioWorker_, config_.force_use_tcp() ? serverAddr.tcp() : serverAddr, options_);
+  }
+
+
+
+=========================
+
+IMetaServiceStub
+
+IMETA_STUB_METHOD(open, OpenReq, OpenRsp);
+
+#define IMETA_STUB_METHOD(NAME, REQ, RESP)                             \
+  virtual CoTryTask<RESP> NAME(const REQ &req,                         \
+                               const net::UserRequestOptions &options, \
+                               serde::Timestamp *timestamp = nullptr) = 0
+
+virtual CoTryTask<OpenRsp> open(const OpenReq &req,                         \
+                               const net::UserRequestOptions &options, \
+                               serde::Timestamp *timestamp = nullptr) = 0
+
+
+class MetaServiceStub : public IMetaServiceStub {
+
+
+#define META_STUB_METHOD(NAME, REQ, RESP)                                                                             \
+  CoTryTask<RESP> NAME(const REQ &req, const net::UserRequestOptions &options, serde::Timestamp *timestamp = nullptr) \
+      override
+
+  META_STUB_METHOD(open, OpenReq, OpenRsp);
+
+
+CoTryTask<OpenRsp> open(const OpenReq &req, const net::UserRequestOptions &options, serde::Timestamp *timestamp = nullptr)
+      override
+
+};
+
+  ||
+  ||
+ \||/
+  \/
+
+#define IMPL_META_STUB_METHOD(NAME, REQ, RESP)                                           \
+  template <typename Context>                                                            \
+  CoTryTask<RESP> MetaServiceStub<Context>::NAME(const REQ &req,                         \
+                                                 const net::UserRequestOptions &options, \
+                                                 hf3fs::serde::Timestamp *timestamp) {   \
+    co_return co_await MetaSerde<>::NAME<Context>(context_, req, &options, timestamp);   \
+  }
+
+
+  IMPL_META_STUB_METHOD(open, OpenReq, OpenRsp);
+
+  template <typename Context>                                                            \
+  CoTryTask<OpenRsp> MetaServiceStub<Context>::open(const OpenReq &req,                         \
+                                                 const net::UserRequestOptions &options, \
+                                                 hf3fs::serde::Timestamp *timestamp) {   \
+    co_return co_await MetaSerde<>::open<Context>(context_, req, &options, timestamp);   \
+  }
+
+
+IMETA_STUB_METHOD --> IMPL_META_STUB_METHOD --> 找到对应的服务 SERDE_SERVICE(MetaSerde, 4)
+--> 对应的RPC SERDE_SERVICE_METHOD_SENDER / SERDE_SERVICE_METHOD_REFL --> 到了对端 --> （接收这一块不是很清楚）
+runOp --> 返回序列化内容，比如返回inode就是以序列化的形式返回，然后client端也能拿到数据

@@ -646,7 +646,7 @@ void hf3fs_lookup(fuse_req_t req, fuse_ino_t fparent, const char *name) {
 
   XLOGF(OP_LOG_LEVEL, "hf3fs_lookup(parent={}, name={}, pid={})", parent, name, fuse_req_ctx(req)->pid);
   record("lookup", fuse_req_ctx(req)->uid);
-
+  // 这个token有什么用？
   auto userInfo = UserInfo(flat::Uid(fuse_req_ctx(req)->uid), flat::Gid(fuse_req_ctx(req)->gid), d.fuseToken);
 
   struct fuse_entry_param e;
@@ -657,8 +657,10 @@ void hf3fs_lookup(fuse_req_t req, fuse_ino_t fparent, const char *name) {
     fuse_reply_entry(req, &e);
     return;
   } else {
+    // virtual dir /3fs-virt
     auto dname = checkVirtDir(parent);
     if (dname) {
+      // virtDir is "3fs-virt";
       if (*dname == virtDir) {
         for (const auto &ni : topVirtDirs) {
           if (ni.name == name) {
@@ -1523,7 +1525,7 @@ void hf3fs_read(fuse_req_t req, fuse_ino_t fino, size_t size, off_t off, struct 
   }
 
   std::vector<ssize_t> res(1);
-  // 保存client 路由信息 chunksize，res是干嘛的？
+  // 保存client 路由信息
   PioV ioExec(*d.storageClient, config.chunk_size_limit(), res);
   auto retAdd = ioExec.addRead(0, inode, 0, off, size, memh.data(), memh);
   if (retAdd.hasError()) {

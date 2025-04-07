@@ -1,0 +1,88 @@
+metaserver初始化
+
+int main(int argc, char *argv[]) {
+  using namespace hf3fs;
+  return TwoPhaseApplication<meta::server::MetaServer>().run(argc, argv);
+}
+
+1、
+TwoPhaseApplication<meta::server::MetaServer>();
+
+template <typename Server>
+class TwoPhaseApplication : public ApplicationBase {
+  using Launcher = typename Server::Launcher;
+  using ServerConfig = typename Server::Config;
+
+ public:
+  TwoPhaseApplication()
+      : launcher_(std::make_unique<Launcher>()) {}
+
+ ...
+}
+
+launcher_(std::make_unique<MetaServer::Launcher>());
+
+class MetaServer : public net::Server {
+	using Launcher = core::ServerLauncher<MetaServer>;
+};
+
+
+所以最终是TwoPhaseApplication类里面的launcher_是core::ServerLauncher<MetaServer>的实例
+
+2、
+return TwoPhaseApplication<meta::server::MetaServer>().run(argc, argv); 的 run 调用的是 ApplicationBase的run
+
+===============================================================================
+run函数
+
+1、auto parseFlagsRes = parseFlags(&argc, &argv);
+2、folly::init(&argc, &argv);
+3、auto initRes = initApplication();
+		auto firstInitRes = launcher_->init();
+			调用了 class ServerLauncher 的 Result<Void> init()，
+			        net::IBManager::start(launcherConfig_.ib_devices());
+					fetcher_ = std::make_unique<RemoteConfigFetcher>(launcherConfig_);
+
+		app_detail::loadAppInfo([this] { return launcher_->loadAppInfo(); }, appInfo_);
+			调用了 class ServerLauncher的Result<flat::AppInfo> loadAppInfo()
+					auto appInfo = launcher::buildBasicAppInfo(appConfig_.getNodeId(), launcherConfig_.cluster_id());
+					从配置里面获取node id 和 cluster id
+    				RETURN_ON_ERROR(fetcher_->completeAppInfo(appInfo));
+    				fetcher 是 ServerMgmtdClientFetcher ，调用Result<Void> completeAppInfo(flat::AppInfo &appInfo) final;
+    						auto routingInfo = mgmtdClient_->getRoutingInfo(); 但是不一定是拿得到的，拿不到就返回MgmtdClientCode::kRoutingInfoNotReady
+
+    	app_detail::initConfig(config_, configFlags_, appInfo_, [this] { return launcher_->loadConfigTemplate(); });
+    			auto configTemplate = loadConfigTemplate(cfg, std::move(launcher));
+    			auto renderRes = hf3fs::renderConfig(configTemplate, &appInfo);
+    			auto initRes = cfg.atomicallyUpdate(std::string_view(*renderRes), /*isHotUpdate=*/false);
+    			auto res = cfg.update(updates, /*isHotUpdate=*/false);
+
+    	app_detail::initCommonComponents(config_.common(), Server::kName, appInfo_.nodeId);
+    	onLogConfigUpdated_ = app_detail::makeLogConfigUpdateCallback(config_.common().log(), Server::kName);
+        onMemConfigUpdated_ = app_detail::makeMemConfigUpdateCallback(config_.common().memory(), appInfo_.hostname);
+
+        app_detail::persistConfig(config_);
+        auto initRes = initServer();
+        		server_ = std::make_unique<Server>(config_.server());  
+        		// MetaServer::MetaServer(const MetaServer::Config &config): net::Server(config.base()), config_(config) {}
+        		
+        		RETURN_ON_ERROR(server_->setup());
+        		// Result<Void> Server::setup(), 循环group->setup() ---- group 到底是什么？？？？
+
+        auto startRes = startServer();
+        		launcher_->startServer(*server_, appInfo_); // class ServerLauncher
+        				// launcher_ 调用 Result<Void> startServer(Server &server, const flat::AppInfo &appInfo)
+        					如果有fetcher，调用， fetcher_ ->startServer(server, appInfo);
+        					否认，调用 server.start(appInfo);
+        							 // MetaServer,但是调用的是基类 Server的start，Result<Void> Server::start(const flat::AppInfo &appInfo)
+        							 		appInfo_.serviceGroups = getServiceGroupInfos();
+        							 		beforeStart();
+        							 		group->start(); // groups的每个group都要start，主要成员是： string向量的services 和 net::Address向量的 endpoints
+        							 		afterStart();
+
+        		appInfo_ = server_->appInfo();
+
+        launcher_.reset();
+
+
+4、auto exitCode = mainLoop();

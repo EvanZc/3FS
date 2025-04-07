@@ -96,6 +96,36 @@ opOff = 70k + 0 = 70k
 getChainOfChunk 入参 (inode, 70k / 64k + 0) ==> (inode, 1) ==> 1就是chunk idx ===> 还要继续
 
 
+关键：
+chunkIndex 就是 offset / layout.chunkSize + track * TRACK_OFFSET_FOR_CHAIN（但是track都是0），所以实际上就是offset / layout.chunkSize
+stripeSize在layout里面 应该是配置完成的 auto stripeSize = parser.present<uint32_t>("--stripe-size");
+
+const auto chains = getChainIndexList();
+// 创建一个长度为 stripe 的 std::vector<uint32_t>，填充从 baseIndex 开始的连续整数（baseIndex, baseIndex+1, ..., baseIndex+stripe-1）。
+// 还有缓存机制 try_emplace_with
+// 比如 10 - 15， 最后还会随机打散 [15, 13, 10, 12, 14, 11]
+
+getChainOfChunk 会得到 tableId + tableVer + chunkid(chains[i])
+
+RoutingInfo::getChainId((tableId + tableVer + chunkid(chains[i])))
+通过tableid + tablever得到table，table是一个持久化的值
+
+
+struct RoutingInfo {
+    // ...
+    ChainTableMap chainTables;                        // persistent，这个是在内存里面
+    // ...
+}
+
+auto chunk = offset / layout.chunkSize;
+return ChunkId(id, 0, chunk);
+
+
+
+
+==== 这个好像setChainTable和getRoutingInfo完成，但是没找到怎么拿到？ ==> 完了 routinginfo又是如何初始化或者更新的？
+
+
 PioV::chunkIo 函数：
     auto chunkSize = f.layout.chunkSize;
     auto chunkOff = off % chunkSize;     // 肯定是从偏移开始，off就是最上层比如hf3fs_write传下来的offset
@@ -111,9 +141,12 @@ PioV::chunkIo 函数：
         Result<ChainId> File::getChainId(const Inode &inode,size_t offset,const flat::RoutingInfo &routingInfo,uint16_t track)
                 |
                 |----auto ref = layout.getChainOfChunk(inode, offset / layout.chunkSize + track * TRACK_OFFSET_FOR_CHAIN);
-                        |
+                        |    
                         |----ChainRef Layout::getChainOfChunk(const Inode &inode, size_t chunkIndex) const {
+                              // chunkIndex = offset / layout.chunkSize + track * TRACK_OFFSET_FOR_CHAIN
+                              
                               const auto chains = getChainIndexList();
+                              // 如果有个range，
                               XLOGF_IF(FATAL, (!stripeSize || chains.empty()), "Inode {}'s layout is invalid", inode);
                               auto stripe = chunkIndex % stripeSize;
                               return ChainRef{tableId, tableVersion, chains[stripe]};
@@ -139,3 +172,16 @@ ChunkId(InodeId inode, uint16_t track, uint32_t chunk)
         inode_(folly::bit_cast<std::array<uint8_t, 8>>(folly::Endian::big64(inode.u64()))),
         track_(folly::bit_cast<std::array<uint8_t, 2>>(folly::Endian::big16(track))),
         chunk_(folly::bit_cast<std::array<uint8_t, 4>>(folly::Endian::big32(chunk))) {}
+
+------------------
+https://www.53ai.com/news/OpenSourceLLM/2025030204691.html
+可以构建多个chain table以满足不同的数据分布需求。例如，可以创建两个chain table，一个用于批处理/离线任务，另一个用于在线服务。这两个chain table由互不重叠的节点和 SSD 上的存储目标组成。
+
+每条链可以包含在多个chain table中。引入链表的概念是为了让元数据服务能够为每个文件选择一个表，并将文件块分布到表中的多个链上。
+--------------------------------------
+
+
+wios_.emplace_back(storageClient_.createWriteIO会产生一个request id
+createWriteIO会产生一个request id
+
+--------------------------------------
